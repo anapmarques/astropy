@@ -276,6 +276,29 @@ class DataOrigin:
             raise StopIteration
         return self.origin[self.__it]
 
+class DataOriginExtractor:
+    def extract_info(self, vot_element, data_origin, recursive = True):
+        raise NotImplementedError
+
+class VOTableFileExtractor(DataOriginExtractor):
+    def extract_info(self, vot: astropy.io.votable.tree.VOTableFile, data_origin: DataOrigin, recursive = True):
+        _extract_generic_info(vot, vot.infos, data_origin)
+        if recursive:
+            for resource in vot.resources:
+                ResourceExtractor().extract_info(resource, data_origin, recursive)
+
+
+class ResourceExtractor(DataOriginExtractor):
+    def extract_info(self, resource: astropy.io.votable.tree.Resource, data_origin: DataOrigin, recursive = True):
+        _extract_generic_info(resource, resource.infos, data_origin)
+        _extract_dali_info(resource.infos, data_origin)
+        if recursive:
+            for table in resource.tables:
+                TableElementExtractor().extract_info(table, data_origin, recursive)
+
+class TableElementExtractor(DataOriginExtractor):
+    def extract_info(self, table: astropy.io.votable.tree.TableElement, data_origin: DataOrigin, recursive = True):
+        _extract_generic_info(table, table.infos, data_origin)
 
 def __empty_dataset_origin(o: DatasetOrigin) -> bool:
     """(internal) check if DataOrigin is filled"""
@@ -286,7 +309,7 @@ def __empty_dataset_origin(o: DatasetOrigin) -> bool:
     return True
 
 
-def __extract_generic_info(
+def _extract_generic_info(
     vo_element: astropy.io.votable.tree.Element, infos: list, data_origin: DataOrigin
 ):
     """(internal) extract info and populate DataOrigin
@@ -329,7 +352,7 @@ def __extract_generic_info(
         data_origin.origin.append(dataset_origin)
 
 
-def __extract_dali_info(infos: list, data_origin: DataOrigin):
+def _extract_dali_info(infos: list, data_origin: DataOrigin):
     """(internal) append with DALI INFO
 
     Parameters
@@ -347,7 +370,7 @@ def __extract_dali_info(infos: list, data_origin: DataOrigin):
                 if not data_origin.query.service_protocol:
                     if data_origin.info is None:
                         data_origin.infos = []
-                    data_origin.quey.infos.append(info)
+                    data_origin.query.infos.append(info)
                     data_origin.query.service_protocol = info.value
 
 
@@ -364,7 +387,7 @@ def __extract_info_from_table(
     data_origin : DataOrigin
         container to fill.
     """
-    __extract_generic_info(table, table.infos, data_origin)
+    TableElementExtractor().extract_info(table, data_origin)
 
 
 def __extract_info_from_resource(
@@ -385,11 +408,7 @@ def __extract_info_from_resource(
     recursive : bool, optional
         make a recursive search (default: True)
     """
-    __extract_generic_info(resource, resource.infos, data_origin)
-    __extract_dali_info(resource.infos, data_origin)
-    if recursive:
-        for table in resource.tables:
-            __extract_info_from_table(table, data_origin)
+    ResourceExtractor().extract_info(resource, data_origin, recursive)
 
 
 def __extract_info_from_votable(
@@ -410,10 +429,7 @@ def __extract_info_from_votable(
     recursive : bool, optional
         make a recursive search (default: True)
     """
-    __extract_generic_info(votable, votable.infos, data_origin)
-    if recursive:
-        for resource in votable.resources:
-            __extract_info_from_resource(resource, data_origin)
+    VOTableFileExtractor().extract_info(votable, data_origin, recursive)
 
 
 def extract_data_origin(vot_element: astropy.io.votable.tree.Element) -> DataOrigin:
@@ -434,17 +450,19 @@ def extract_data_origin(vot_element: astropy.io.votable.tree.Element) -> DataOri
         input ``vot_element`` type is not supported
     """
     data_origin = DataOrigin()
-    if isinstance(vot_element, astropy.io.votable.tree.VOTableFile):
-        __extract_info_from_votable(vot_element, data_origin)
-    elif isinstance(vot_element, astropy.io.votable.tree.Resource):
-        __extract_info_from_resource(vot_element, data_origin)
-    elif isinstance(vot_element, astropy.io.votable.tree.TableElement):
-        __extract_info_from_table(vot_element, data_origin)
-    else:
-        raise TypeError("input vot_element type is not supported.")
+    
+    dispatch = (
+        (astropy.io.votable.tree.VOTableFile, VOTableFileExtractor),
+        (astropy.io.votable.tree.Resource, ResourceExtractor),
+        (astropy.io.votable.tree.TableElement, TableElementExtractor)
+    )
 
-    return data_origin
+    for elt_type, extractor in dispatch:
+        if isinstance(vot_element, elt_type):
+            extractor().extract_info(vot_element, data_origin)
+            return data_origin
 
+    raise TypeError("input vot_element type is not supported.")
 
 def add_data_origin_info(
     vot_element: astropy.io.votable.tree.Element,
